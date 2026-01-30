@@ -27,7 +27,9 @@ class InterviewGraph:
         self.hiring_manager = HiringManagerAgent()
         self.logger = logger
         
+        # Добавляем лимит рекурсии чтобы избежать бесконечных циклов
         self.app = self._build_full_graph().compile()
+        self.config = {"recursion_limit": 50}
     
     def set_logger(self, logger):
         self.logger = logger
@@ -364,11 +366,13 @@ class InterviewGraph:
 
     async def start_interview(self, profile, session_id):
         initial = create_initial_state(session_id, profile)
-        return await self.app.ainvoke(initial)
+        return await self.app.ainvoke(initial, config=self.config)
     
     async def process_user_message(self, state, user_message):
-        state = {**state, "current_user_message": user_message}
-        return await self.app.ainvoke(state)
+        # Важно: создаём копию состояния, чтобы избежать мутаций
+        new_state = dict(state)
+        new_state["current_user_message"] = user_message
+        return await self.app.ainvoke(new_state, config=self.config)
 
 
 def create_interview_graph():

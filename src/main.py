@@ -17,24 +17,48 @@ class InterviewApp:
         self.graph = create_interview_graph()
         self.logger = InterviewLogger()
         self.sessions = {}  # session_id -> state
+        self.processing = set()  # Блокировка от повторных вызовов
         self.graph.set_logger(self.logger)
     
     async def start(self, profile, session_id):
-        log_path = self.logger.start_session(session_id)
-        print(f"Session {session_id}: {log_path}")
+        # Защита от повторного старта
+        if session_id in self.processing:
+            print(f"Session {session_id} is already starting, skipping")
+            return self.sessions.get(session_id)
         
-        state = await self.graph.start_interview(profile, session_id)
-        self.sessions[session_id] = state
-        return state
+        try:
+            self.processing.add(session_id)
+            log_path = self.logger.start_session(session_id)
+            print(f"Session {session_id}: {log_path}")
+            
+            state = await self.graph.start_interview(profile, session_id)
+            self.sessions[session_id] = state
+            return state
+        finally:
+            self.processing.discard(session_id)
     
     async def process(self, session_id, message):
         state = self.sessions.get(session_id)
         if not state:
             raise ValueError(f"Session {session_id} not found")
         
-        state = await self.graph.process_user_message(state, message)
-        self.sessions[session_id] = state
-        return state
+        # Защита от повторных вызовов
+        if session_id in self.processing:
+            print(f"Session {session_id} is already processing, skipping")
+            return state
+        
+        # Проверка что интервью не завершено
+        if state.get("status") == "completed":
+            print(f"Session {session_id} already completed")
+            return state
+        
+        try:
+            self.processing.add(session_id)
+            state = await self.graph.process_user_message(state, message)
+            self.sessions[session_id] = state
+            return state
+        finally:
+            self.processing.discard(session_id)
     
     def get_state(self, session_id):
         return self.sessions.get(session_id)
@@ -98,6 +122,11 @@ async def send_message_async(message, chat_history, session_id):
         return chat_history, "Введите сообщение", "", "", session_id
     
     interview_app = get_app()
+    
+    # Проверяем не завершено ли уже интервью
+    current_state = interview_app.get_state(session_id)
+    if current_state and current_state.get("status") == "completed":
+        return chat_history, "Интервью уже завершено", interview_app.get_thoughts(session_id), "", session_id
     
     try:
         state = await interview_app.process(session_id, message)
