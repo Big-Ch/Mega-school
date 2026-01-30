@@ -46,6 +46,7 @@ flagged/
 
 # Presentation & docs (не для репозитория)
 PRESENTATION.md
+ARCHITECTURE.md
 Task.txt
 
 # Test files
