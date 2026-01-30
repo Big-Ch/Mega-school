@@ -1,100 +1,109 @@
 # -*- coding: utf-8 -*-
-"""Проверка фактов через веб-поиск"""
+"""Fact Checker Agent - проверяет факты через веб-поиск"""
 
-from src.agents.base import BaseAgent
-from src.prompts.templates import FACT_CHECKER_PROMPT, FACT_CHECKER_NO_SEARCH_PROMPT
-from src.tools.web_search import create_web_search_tool
-from src.models.schemas import FactCheckResult, VerifiedFact, FalseFact, UnverifiedFact
+from .base import BaseAgent
 from src.models.output_schemas import FactCheckOutput
+from src.tools.web_search import create_web_search_tool
+from src.prompts.templates import FACT_CHECKER_PROMPT
 
 
 class FactCheckerAgent(BaseAgent):
-    """Проверяет факты через веб-поиск"""
+    """Агент для проверки фактов через веб-поиск"""
     
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self):
+        super().__init__()
         self.web_search = create_web_search_tool()
     
-    @property
-    def name(self):
-        return "FactChecker"
-    
-    async def run(self, state):
+    async def run(self, state: dict) -> dict:
         analysis = state.get("answer_analysis")
-        
-        if not analysis or not analysis.needs_fact_check:
-            return {"fact_check_result": FactCheckResult()}
+        if not analysis or not analysis.suspicious_claims:
+            return {"fact_check_result": None}
         
         claims = analysis.suspicious_claims
-        if not claims:
-            return {"fact_check_result": FactCheckResult()}
+        results = []
         
-        # Поиск по каждому утверждению
-        searchResults = {}
-        search_success = False
-        
-        for claim in claims:
+        for claim in claims[:3]:  # Максимум 3 проверки
             try:
-                res = await self.web_search.verify_fact(claim, context="programming")
-                searchResults[claim] = res
-                if res.get("found"):
-                    search_success = True
+                search_result = await self.web_search.verify_fact(claim)
+                
+                # Анализируем результаты поиска через LLM
+                verdict = await self._analyze_claim(claim, search_result)
+                results.append(verdict)
             except Exception as e:
-                print(f"Search error: {e}")
-                searchResults[claim] = {"found": False, "error": str(e)}
+                print(f"Fact check error for '{claim}': {e}")
+                results.append({
+                    "claim": claim,
+                    "status": "unverified",
+                    "confidence": 0.0,
+                    "correct_info": None,
+                    "source": None,
+                    "reason": str(e)
+                })
         
-        # Выбор промпта
-        if search_success:
-            prompt = FACT_CHECKER_PROMPT.format(
-                claims="\n".join([f"- {c}" for c in claims]),
-                search_results=self._format_results(searchResults)
-            )
-        else:
-            prompt = FACT_CHECKER_NO_SEARCH_PROMPT.format(
-                claims="\n".join([f"- {c}" for c in claims])
-            )
-        
-        try:
-            result = await self._call_structured(FactCheckOutput, prompt)
-            fact_check = self._convert(result)
-        except Exception as e:
-            print(f"Error in {self.name}: {e}")
-            # Презумпция невиновности - все как unverified
-            fact_check = FactCheckResult(
-                unverified=[UnverifiedFact(claim=c, reason="web_search_unavailable")
-                           for c in claims]
-            )
-        
-        thoughts = state.get("internal_thoughts", {})
-        thoughts["fact_checker"] = {
-            "claims_checked": claims,
-            "search_success": search_success,
-            "verified_true_count": len(fact_check.verified_true),
-            "verified_false_count": len(fact_check.verified_false),
-            "unverified_count": len(fact_check.unverified)
+        # Формируем результат
+        fact_check_result = {
+            "verified_true": [r for r in results if r.get("status") == "verified_true"],
+            "verified_false": [r for r in results if r.get("status") == "verified_false"],
+            "unverified": [r for r in results if r.get("status") == "unverified"]
         }
         
-        return {"fact_check_result": fact_check,  "internal_thoughts": thoughts}
+        # Добавляем в internal_thoughts
+        thoughts = state.get("internal_thoughts") or {}
+        thoughts["fact_checker"] = {
+            "claims_checked": len(claims),
+            "verified_true": len(fact_check_result["verified_true"]),
+            "verified_false": len(fact_check_result["verified_false"]),
+            "unverified": len(fact_check_result["unverified"])
+        }
+        
+        return {
+            "fact_check_result": fact_check_result,
+            "internal_thoughts": thoughts
+        }
     
-
-    def _format_results(self, results):
-        lines = []
-        for claim, r in results.items():
-            lines.append(f"\nУтверждение: {claim}")
-            if r.get("found"):
-                for item in r.get("results", [])[:3]:
-                    lines.append(f"  - {item.title}")
-            else:
-                lines.append(f"  Не найдено")
-        return "\n".join(lines)
-    
-    def _convert(self, output):
-        return FactCheckResult(
-            verified_true=[VerifiedFact(claim=f.claim, confidence=f.confidence, source=f.source)
-                          for f in output.verified_true],
-            verified_false=[FalseFact(claim=f.claim, confidence=f.confidence,
-                           correct_info=f.correct_info, source=f.source)
-                           for f in output.verified_false],
-            unverified=[UnverifiedFact(claim=f.claim, reason=f.reason,
-                       llm_assessment=f.llm_assessment) for f in output.unverified]
+    async def _analyze_claim(self, claim: str, search_result: dict) -> dict:
+        """Анализирует результаты поиска для проверки утверждения"""
+        
+        if not search_result.get("found") or not search_result.get("results"):
+            return {
+                "claim": claim,
+                "status": "unverified",
+                "confidence": 0.0,
+                "correct_info": None,
+                "source": None,
+                "reason": "no_search_results"
+            }
+        
+        # Формируем контекст из результатов поиска
+        search_context = "\n".join([
+            f"- {r.title}: {r.snippet}" 
+            for r in search_result["results"][:3]
+        ])
+        
+        prompt = FACT_CHECKER_PROMPT.format(
+            claim=claim,
+            search_results=search_context
         )
+        
+        try:
+            llm = self.get_llm().with_structured_output(FactCheckOutput)
+            result = await llm.ainvoke(prompt)
+            
+            return {
+                "claim": claim,
+                "status": result.status,
+                "confidence": result.confidence,
+                "correct_info": result.correct_info,
+                "source": result.source,
+                "reason": result.reasoning
+            }
+        except Exception as e:
+            print(f"LLM analysis error: {e}")
+            return {
+                "claim": claim,
+                "status": "unverified",
+                "confidence": 0.0,
+                "correct_info": None,
+                "source": None,
+                "reason": f"llm_error: {e}"
+            }
