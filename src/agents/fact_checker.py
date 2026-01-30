@@ -10,6 +10,10 @@ from src.prompts.templates import FACT_CHECKER_PROMPT
 class FactCheckerAgent(BaseAgent):
     """Агент для проверки фактов через веб-поиск"""
     
+    @property
+    def name(self):
+        return "FactChecker"
+    
     def __init__(self):
         super().__init__()
         self.web_search = create_web_search_tool()
@@ -86,8 +90,8 @@ class FactCheckerAgent(BaseAgent):
         )
         
         try:
-            llm = self.get_llm().with_structured_output(FactCheckOutput)
-            result = await llm.ainvoke(prompt)
+            structured_llm = self.llm.with_structured_output(FactCheckOutput)
+            result = await structured_llm.ainvoke(prompt)
             
             return {
                 "claim": claim,
