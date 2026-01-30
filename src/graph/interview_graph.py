@@ -277,7 +277,6 @@ class InterviewGraph:
         return new_state
     
     async def _log_turn_internal(self, state, is_greeting=False):
-        logs = state.get("turn_logs", [])
         thoughts = state.get("internal_thoughts") or {}
         
         if is_greeting:
@@ -295,12 +294,20 @@ class InterviewGraph:
                 internal_thoughts=InternalThoughts(**thoughts)
             )
         
-        new_logs = logs + [turn_log]
-        new_state = {**state, "turn_logs": new_logs, "internal_thoughts": None, "last_thoughts": thoughts}
+        # Возвращаем только новый лог - редюсер add сам добавит к списку
+        result = {
+            "turn_logs": [turn_log],
+            "internal_thoughts": None,
+            "last_thoughts": thoughts
+        }
         
         if self.logger:
-            self.logger.save_session(new_state)
-        return new_state
+            # Для сохранения нужен полный список
+            full_logs = state.get("turn_logs", []) + [turn_log]
+            save_state = {**state, "turn_logs": full_logs, "last_thoughts": thoughts}
+            self.logger.save_session(save_state)
+        
+        return result
     
     def _make_routing_decision(self, state):
         analysis = state.get("answer_analysis")
